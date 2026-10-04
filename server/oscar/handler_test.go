@@ -4282,6 +4282,55 @@ func TestHandler_OServiceServiceServiceRequest(t *testing.T) {
 	}
 }
 
+func TestHandler_OServiceServiceRequest_UsesWebSocketRedirectAddress(t *testing.T) {
+	input := wire.SNACMessage{
+		Frame: wire.SNACFrame{
+			FoodGroup: wire.OService,
+			SubGroup:  wire.OServiceServiceRequest,
+		},
+		Body: wire.SNAC_0x01_0x04_OServiceServiceRequest{
+			FoodGroup: wire.Chat,
+		},
+	}
+	group := config.ListenerGroup{
+		BOSAdvertisedHostPlain:     "tcp.example.com:5190",
+		BOSAdvertisedHostSSL:       "ssl.example.com:5193",
+		BOSWebSocketAdvertisedHost: "ws.example.com:443",
+	}
+	expectedGroup := group
+	expectedGroup.BOSAdvertisedHostPlain = group.BOSWebSocketAdvertisedHost
+	expectedGroup.BOSAdvertisedHostSSL = ""
+
+	svc := newMockOServiceService(t)
+	svc.EXPECT().
+		ServiceRequest(mock.Anything, wire.BOS, mock.Anything, input.Frame, input.Body, expectedGroup).
+		Return(wire.SNACMessage{}, nil)
+
+	responseWriter := newMockResponseWriter(t)
+	responseWriter.EXPECT().SendSNAC(wire.SNACFrame{}, mock.Anything).Return(nil)
+
+	h := Handler{
+		OServiceService: svc,
+		RouteLogger: middleware.RouteLogger{
+			Logger: slog.Default(),
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	assert.NoError(t, wire.MarshalBE(input.Body, buf))
+
+	err := h.Handle(
+		context.TODO(),
+		wire.BOS,
+		nil,
+		input.Frame,
+		buf,
+		responseWriter,
+		config.Endpoint{Group: group, IsWebSocket: true},
+	)
+	assert.NoError(t, err)
+}
+
 func TestHandler_OServiceServiceIdleNotification(t *testing.T) {
 	tests := []struct {
 		name          string

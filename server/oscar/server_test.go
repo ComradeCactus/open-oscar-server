@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"golang.org/x/net/websocket"
 	"golang.org/x/time/rate"
 
 	"github.com/mk6i/open-oscar-server/config"
@@ -162,6 +163,75 @@ type fakeConn struct {
 }
 
 func (f fakeConn) RemoteAddr() net.Addr { return f.remote }
+
+func TestServer_WebSocketBridge(t *testing.T) {
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	address := reserved.Addr().String()
+	assert.NoError(t, reserved.Close())
+
+	server := NewServer(
+		nil,
+		nil,
+		nil,
+		nil,
+		slog.Default(),
+		nil,
+		nil,
+		nil,
+		wire.DefaultSNACRateLimits(),
+		nil,
+		[]config.ListenerGroup{{
+			BOSListenAddress:           "127.0.0.1:0",
+			BOSAdvertisedHostPlain:     "127.0.0.1:5190",
+			BOSWebSocketListenAddress:  address,
+			BOSWebSocketAdvertisedHost: address,
+		}},
+		func(context.Context, *state.SessionInstance) error { return nil },
+		func(context.Context, *state.SessionInstance) {},
+	)
+	server.handler = func(_ context.Context, conn net.Conn, _ config.Endpoint) error {
+		_, err := io.Copy(conn, conn)
+		return err
+	}
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- server.ListenAndServe()
+	}()
+
+	var conn *websocket.Conn
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err = websocket.Dial("ws://"+address+"/oscar", "", "http://localhost/")
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !assert.NoError(t, err, "WebSocket bridge did not accept a connection") {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		assert.NoError(t, server.Shutdown(ctx))
+		<-serveErr
+		return
+	}
+	defer conn.Close()
+	conn.PayloadType = websocket.BinaryFrame
+
+	want := []byte{0x2a, 0x02, 0x00, 0x01, 0x00, 0x00}
+	_, err = conn.Write(want)
+	assert.NoError(t, err)
+	got := make([]byte, len(want))
+	_, err = io.ReadFull(conn, got)
+	assert.NoError(t, err)
+	assert.Equal(t, want, got)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	assert.NoError(t, server.Shutdown(ctx))
+	assert.NoError(t, <-serveErr)
+}
 
 func TestOscarServer_RouteConnection_Auth_BUCP(t *testing.T) {
 	serverConn, clientConn := net.Pipe()

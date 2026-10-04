@@ -60,6 +60,8 @@ Don't have AIM installed yet? Check out the [AIM Client Setup Guide](./docs/CLIE
 
 ...how about ICQ? Check out the [ICQ Client Setup Guide](./docs/CLIENT_ICQ.md).
 
+For browser-based JavaScript clients, see the [OSCAR WebSocket bridge guide](./docs/WEBSOCKET.md).
+
 ## 🛠️ Development
 
 This project is under active development. Contributions are welcome!

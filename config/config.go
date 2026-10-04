@@ -85,12 +85,14 @@ func cutOriginScheme(origin string) (scheme string, rest string, ok bool) {
 // so a session can upgrade to SSL or downgrade to plaintext on reconnect.
 type ListenerGroup struct {
 	// Name is the URI scheme the group was parsed from, e.g. "LOCAL".
-	Name                   string
-	BOSListenAddress       string
-	BOSListenAddressSSL    string
-	BOSAdvertisedHostPlain string
-	BOSAdvertisedHostSSL   string
-	KerberosListenAddress  string
+	Name                       string
+	BOSListenAddress           string
+	BOSListenAddressSSL        string
+	BOSAdvertisedHostPlain     string
+	BOSAdvertisedHostSSL       string
+	BOSWebSocketListenAddress  string
+	BOSWebSocketAdvertisedHost string
+	KerberosListenAddress      string
 }
 
 // HasSSL reports whether clients can reach this group over SSL. Config
@@ -122,16 +124,28 @@ func (g ListenerGroup) Endpoints() []Endpoint {
 	return eps
 }
 
+// WebSocketEndpoint returns the group's WebSocket OSCAR endpoint.
+func (g ListenerGroup) WebSocketEndpoint() (Endpoint, bool) {
+	if g.BOSWebSocketListenAddress == "" {
+		return Endpoint{}, false
+	}
+	return Endpoint{Group: g, ListenAddress: g.BOSWebSocketListenAddress, IsWebSocket: true}, true
+}
+
 // Endpoint is a single BOS socket. IsSSL means traffic arrives from an SSL
 // terminator, so clients that connect here stay on the SSL path.
 type Endpoint struct {
 	Group         ListenerGroup
 	ListenAddress string
 	IsSSL         bool
+	IsWebSocket   bool
 }
 
 // AdvertisedHost returns the BOS host clients on this endpoint reconnect to.
 func (e Endpoint) AdvertisedHost() string {
+	if e.IsWebSocket {
+		return e.Group.BOSWebSocketAdvertisedHost
+	}
 	if e.IsSSL {
 		return e.Group.BOSAdvertisedHostSSL
 	}
@@ -141,15 +155,17 @@ func (e Endpoint) AdvertisedHost() string {
 //go:generate go run ../cmd/config_generator unix settings.env basic
 //go:generate go run ../cmd/config_generator unix ssl/settings.env ssl
 type Config struct {
-	BOSListeners            []string `envconfig:"OSCAR_LISTENERS" required:"true" basic:"LOCAL://0.0.0.0:5190" ssl:"LOCAL://0.0.0.0:5190" description:"Network listeners for core OSCAR services. For multi-homed servers, allows users to connect from multiple networks. For example, you can allow both LAN and Internet clients to connect to the same server using different connection settings.\n\nFormat:\n\t- Comma-separated list of [NAME]://[HOSTNAME]:[PORT]\n\t- Listener names and ports must be unique\n\t- Listener names are user-defined\n\t- Each listener needs a listener in OSCAR_ADVERTISED_LISTENERS_PLAIN\n\nExamples:\n\t// Listen on all interfaces\n\tLAN://0.0.0.0:5190\n\t// Separate Internet and LAN config\n\tWAN://142.250.176.206:5190,LAN://192.168.1.10:5191"`
-	BOSAdvertisedHostsPlain []string `envconfig:"OSCAR_ADVERTISED_LISTENERS_PLAIN" required:"true" basic:"LOCAL://127.0.0.1:5190" ssl:"LOCAL://ras.dev:5190" description:"Hostnames published by the server that clients connect to for accessing various OSCAR services. These hostnames are NOT the bind addresses. For multi-homed use servers, allows clients to connect using separate hostnames per network.\n\nFormat:\n\t- Comma-separated list of [NAME]://[HOSTNAME]:[PORT]\n\t- Each listener config must correspond to a config in OSCAR_LISTENERS\n\t- Clients MUST be able to connect to these hostnames\n\nExamples:\n\t// Local LAN config, server behind NAT\n\tLAN://192.168.1.10:5190\n\t// Separate Internet and LAN config\n\tWAN://aim.example.com:5190,LAN://192.168.1.10:5191"`
-	BOSListenersSSL         []string `envconfig:"OSCAR_LISTENERS_SSL" required:"false" basic:"" ssl:"LOCAL://0.0.0.0:5191" description:"Network listeners for core OSCAR services that receive decrypted traffic from an SSL terminator such as nginx. Clients that connect through these listeners are redirected to the hostnames in OSCAR_ADVERTISED_LISTENERS_SSL, keeping them on the SSL path for the rest of the session.\n\nFormat:\n\t- Comma-separated list of [NAME]://[HOSTNAME]:[PORT]\n\t- Listener names and ports must be unique\n\t- Each listener needs a listener in OSCAR_LISTENERS and OSCAR_ADVERTISED_LISTENERS_SSL\n\t- A listener without a matching OSCAR_ADVERTISED_LISTENERS_SSL entry is not started\n\nExamples:\n\t// Listen on all interfaces\n\tLAN://0.0.0.0:5191\n\t// Separate Internet and LAN config\n\tWAN://142.250.176.206:5191,LAN://192.168.1.10:5192"`
-	BOSAdvertisedHostsSSL   []string `envconfig:"OSCAR_ADVERTISED_LISTENERS_SSL" required:"false" basic:"" ssl:"LOCAL://ras.dev:5193" description:"Same as OSCAR_ADVERTISED_LISTENERS_PLAIN, except the hostname is for the server that terminates SSL. Each listener defined here must have a matching listener in OSCAR_LISTENERS_SSL for the terminator to forward decrypted traffic to."`
-	KerberosListeners       []string `envconfig:"KERBEROS_LISTENERS" required:"false" basic:"" ssl:"LOCAL://0.0.0.0:1088" description:"Network listeners for Kerberos authentication. See OSCAR_LISTENERS doc for more details.\n\nExamples:\n\t// Listen on all interfaces\n\tLAN://0.0.0.0:1088\n\t// Separate Internet and LAN config\n\tWAN://142.250.176.206:1088,LAN://192.168.1.10:1087"`
-	TOCListeners            []string `envconfig:"TOC_LISTENERS" required:"true" basic:"0.0.0.0:9898" ssl:"0.0.0.0:9898" description:"Network listeners for TOC protocol service.\n\nFormat: Comma-separated list of hostname:port pairs.\n\nExamples:\n\t// All interfaces\n\t0.0.0.0:9898\n\t// Multiple listeners\n\t0.0.0.0:9898,192.168.1.10:9899"`
-	APIListener             string   `envconfig:"API_LISTENER" required:"true" basic:"127.0.0.1:8080" ssl:"127.0.0.1:8080" description:"Network listener for management API binds to. Only 1 listener can be specified. (Default 127.0.0.1 restricts to same machine only)."`
-	WebAPIListeners         []string `envconfig:"WEBAPI_LISTENERS" required:"false" basic:"0.0.0.0:8081" ssl:"0.0.0.0:8081" description:"Network listeners for WebAPI. See OSCAR_LISTENERS doc for more details.\n\nExamples:\n\t// Listen on all interfaces\n\tLAN://0.0.0.0:8081\n\t// Separate Internet and LAN config\n\tWAN://142.250.176.206:8081,LAN://192.168.1.10:8082"`
-	WebAPIAllowedOrigins    []string `envconfig:"WEBAPI_ALLOWED_ORIGINS" required:"false" basic:"http://localhost:*" ssl:"http://localhost:*" description:"Origins allowed to call the WebAPI from a browser (CORS). A browser blocks a cross-origin response whose origin is not listed here, so the client serving the web app must appear in this list.\n\nFormat:\n\t- Comma-separated list of [SCHEME]://[HOSTNAME]:[PORT]\n\t- An origin is the scheme, host and port together: a client served from another port needs its own entry\n\t- Omit the port when it is the scheme default, the way a browser writes it: https://aim.example.com, not https://aim.example.com:443\n\t- No trailing slash, path, query or fragment\n\t- An entry may contain one wildcard (*) standing in for 0 or more characters, in the host or the port: https://*.example.com, http://localhost:* . Only one wildcard per entry, the scheme cannot be wildcarded, and matching one costs a little more per request\n\t- A lone * allows any origin, which is also what an unset or empty value means\n\nExamples:\n\t// Single origin\n\thttps://ras.dev\n\t// Web app on a separate port, plus the API host itself\n\thttp://localhost:8000,https://ras.dev\n\t// Any origin (development only)\n\t*"`
+	BOSListeners                []string `envconfig:"OSCAR_LISTENERS" required:"true" basic:"LOCAL://0.0.0.0:5190" ssl:"LOCAL://0.0.0.0:5190" description:"Network listeners for core OSCAR services. For multi-homed servers, allows users to connect from multiple networks. For example, you can allow both LAN and Internet clients to connect to the same server using different connection settings.\n\nFormat:\n\t- Comma-separated list of [NAME]://[HOSTNAME]:[PORT]\n\t- Listener names and ports must be unique\n\t- Listener names are user-defined\n\t- Each listener needs a listener in OSCAR_ADVERTISED_LISTENERS_PLAIN\n\nExamples:\n\t// Listen on all interfaces\n\tLAN://0.0.0.0:5190\n\t// Separate Internet and LAN config\n\tWAN://142.250.176.206:5190,LAN://192.168.1.10:5191"`
+	BOSAdvertisedHostsPlain     []string `envconfig:"OSCAR_ADVERTISED_LISTENERS_PLAIN" required:"true" basic:"LOCAL://127.0.0.1:5190" ssl:"LOCAL://ras.dev:5190" description:"Hostnames published by the server that clients connect to for accessing various OSCAR services. These hostnames are NOT the bind addresses. For multi-homed use servers, allows clients to connect using separate hostnames per network.\n\nFormat:\n\t- Comma-separated list of [NAME]://[HOSTNAME]:[PORT]\n\t- Each listener config must correspond to a config in OSCAR_LISTENERS\n\t- Clients MUST be able to connect to these hostnames\n\nExamples:\n\t// Local LAN config, server behind NAT\n\tLAN://192.168.1.10:5190\n\t// Separate Internet and LAN config\n\tWAN://aim.example.com:5190,LAN://192.168.1.10:5191"`
+	BOSListenersSSL             []string `envconfig:"OSCAR_LISTENERS_SSL" required:"false" basic:"" ssl:"LOCAL://0.0.0.0:5191" description:"Network listeners for core OSCAR services that receive decrypted traffic from an SSL terminator such as nginx. Clients that connect through these listeners are redirected to the hostnames in OSCAR_ADVERTISED_LISTENERS_SSL, keeping them on the SSL path for the rest of the session.\n\nFormat:\n\t- Comma-separated list of [NAME]://[HOSTNAME]:[PORT]\n\t- Listener names and ports must be unique\n\t- Each listener needs a listener in OSCAR_LISTENERS and OSCAR_ADVERTISED_LISTENERS_SSL\n\t- A listener without a matching OSCAR_ADVERTISED_LISTENERS_SSL entry is not started\n\nExamples:\n\t// Listen on all interfaces\n\tLAN://0.0.0.0:5191\n\t// Separate Internet and LAN config\n\tWAN://142.250.176.206:5191,LAN://192.168.1.10:5192"`
+	BOSAdvertisedHostsSSL       []string `envconfig:"OSCAR_ADVERTISED_LISTENERS_SSL" required:"false" basic:"" ssl:"LOCAL://ras.dev:5193" description:"Same as OSCAR_ADVERTISED_LISTENERS_PLAIN, except the hostname is for the server that terminates SSL. Each listener defined here must have a matching listener in OSCAR_LISTENERS_SSL for the terminator to forward decrypted traffic to."`
+	BOSWebSocketListeners       []string `envconfig:"OSCAR_WEBSOCKET_LISTENERS" required:"false" basic:"" ssl:"" description:"Optional HTTP listeners for the OSCAR WebSocket bridge. Requests upgrade at /oscar and carry OSCAR FLAP bytes in binary WebSocket messages. The listener is plaintext and can sit behind a TLS-terminating reverse proxy.\n\nFormat: Comma-separated list of [NAME]://[HOSTNAME]:[PORT]. Each name must also have an OSCAR_WEBSOCKET_ADVERTISED_LISTENERS entry."`
+	BOSWebSocketAdvertisedHosts []string `envconfig:"OSCAR_WEBSOCKET_ADVERTISED_LISTENERS" required:"false" basic:"" ssl:"" description:"Browser-reachable host and port advertised to OSCAR clients connected through the WebSocket bridge. The JavaScript client should connect to ws:// or wss://<host>:<port>/oscar, using wss:// when served over HTTPS.\n\nFormat: Comma-separated list of [NAME]://[HOSTNAME]:[PORT]. Each name must also have an OSCAR_WEBSOCKET_LISTENERS entry."`
+	KerberosListeners           []string `envconfig:"KERBEROS_LISTENERS" required:"false" basic:"" ssl:"LOCAL://0.0.0.0:1088" description:"Network listeners for Kerberos authentication. See OSCAR_LISTENERS doc for more details.\n\nExamples:\n\t// Listen on all interfaces\n\tLAN://0.0.0.0:1088\n\t// Separate Internet and LAN config\n\tWAN://142.250.176.206:1088,LAN://192.168.1.10:1087"`
+	TOCListeners                []string `envconfig:"TOC_LISTENERS" required:"true" basic:"0.0.0.0:9898" ssl:"0.0.0.0:9898" description:"Network listeners for TOC protocol service.\n\nFormat: Comma-separated list of hostname:port pairs.\n\nExamples:\n\t// All interfaces\n\t0.0.0.0:9898\n\t// Multiple listeners\n\t0.0.0.0:9898,192.168.1.10:9899"`
+	APIListener                 string   `envconfig:"API_LISTENER" required:"true" basic:"127.0.0.1:8080" ssl:"127.0.0.1:8080" description:"Network listener for management API binds to. Only 1 listener can be specified. (Default 127.0.0.1 restricts to same machine only)."`
+	WebAPIListeners             []string `envconfig:"WEBAPI_LISTENERS" required:"false" basic:"0.0.0.0:8081" ssl:"0.0.0.0:8081" description:"Network listeners for WebAPI. See OSCAR_LISTENERS doc for more details.\n\nExamples:\n\t// Listen on all interfaces\n\tLAN://0.0.0.0:8081\n\t// Separate Internet and LAN config\n\tWAN://142.250.176.206:8081,LAN://192.168.1.10:8082"`
+	WebAPIAllowedOrigins        []string `envconfig:"WEBAPI_ALLOWED_ORIGINS" required:"false" basic:"http://localhost:*" ssl:"http://localhost:*" description:"Origins allowed to call the WebAPI from a browser (CORS). A browser blocks a cross-origin response whose origin is not listed here, so the client serving the web app must appear in this list.\n\nFormat:\n\t- Comma-separated list of [SCHEME]://[HOSTNAME]:[PORT]\n\t- An origin is the scheme, host and port together: a client served from another port needs its own entry\n\t- Omit the port when it is the scheme default, the way a browser writes it: https://aim.example.com, not https://aim.example.com:443\n\t- No trailing slash, path, query or fragment\n\t- An entry may contain one wildcard (*) standing in for 0 or more characters, in the host or the port: https://*.example.com, http://localhost:* . Only one wildcard per entry, the scheme cannot be wildcarded, and matching one costs a little more per request\n\t- A lone * allows any origin, which is also what an unset or empty value means\n\nExamples:\n\t// Single origin\n\thttps://ras.dev\n\t// Web app on a separate port, plus the API host itself\n\thttp://localhost:8000,https://ras.dev\n\t// Any origin (development only)\n\t*"`
 
 	DBPath                 string `envconfig:"DB_PATH" required:"true" basic:"oscar.sqlite" ssl:"oscar.sqlite" description:"The path to the SQLite database file. The file and DB schema are auto-created if they doesn't exist."`
 	DisableAuth            bool   `envconfig:"DISABLE_AUTH" required:"true" basic:"true" ssl:"true" description:"Disable password check and auto-create new users at login time. Useful for quickly creating new accounts during development without having to register new users via the management API."`
@@ -311,6 +327,44 @@ func (c *Config) ParseListenersCfg() ([]ListenerGroup, error) {
 		m[u.Scheme].BOSAdvertisedHostSSL = net.JoinHostPort(u.Hostname(), u.Port())
 	}
 
+	// Parse WebSocket BOS listeners.
+	for _, uriStr := range c.BOSWebSocketListeners {
+		u, err := parseURI(uriStr)
+		if err != nil {
+			return nil, err
+		}
+		if u == nil {
+			continue
+		}
+
+		if _, ok := m[u.Scheme]; !ok {
+			m[u.Scheme] = &ListenerGroup{}
+		}
+		if m[u.Scheme].BOSWebSocketListenAddress != "" {
+			return nil, errDuplicateListener
+		}
+		m[u.Scheme].BOSWebSocketListenAddress = net.JoinHostPort(u.Hostname(), u.Port())
+	}
+
+	// Parse advertised WebSocket BOS listeners.
+	for _, uriStr := range c.BOSWebSocketAdvertisedHosts {
+		u, err := parseURI(uriStr)
+		if err != nil {
+			return nil, err
+		}
+		if u == nil {
+			continue
+		}
+
+		if _, ok := m[u.Scheme]; !ok {
+			m[u.Scheme] = &ListenerGroup{}
+		}
+		if m[u.Scheme].BOSWebSocketAdvertisedHost != "" {
+			return nil, errDuplicateListener
+		}
+		m[u.Scheme].BOSWebSocketAdvertisedHost = net.JoinHostPort(u.Hostname(), u.Port())
+	}
+
 	// Parse Kerberos listeners
 	for _, uriStr := range c.KerberosListeners {
 		u, err := parseURI(uriStr)
@@ -340,6 +394,10 @@ func (c *Config) ParseListenersCfg() ([]ListenerGroup, error) {
 			return nil, fmt.Errorf("missing BOS listen address for listener `%s://`", k)
 		case v.HasSSL() && v.BOSListenAddressSSL == "":
 			return nil, fmt.Errorf("missing SSL BOS listen address for listener `%s://`", k)
+		case v.BOSWebSocketListenAddress != "" && v.BOSWebSocketAdvertisedHost == "":
+			return nil, fmt.Errorf("missing WebSocket BOS advertise address for listener `%s://`", k)
+		case v.BOSWebSocketListenAddress == "" && v.BOSWebSocketAdvertisedHost != "":
+			return nil, fmt.Errorf("missing WebSocket BOS listen address for listener `%s://`", k)
 		}
 		v.Name = k
 		ret = append(ret, *v)
@@ -351,11 +409,12 @@ func (c *Config) ParseListenersCfg() ([]ListenerGroup, error) {
 
 	// Catch sockets that collide across lists or groups, which would otherwise
 	// surface at bind time as a bare "address already in use".
-	seen := make(map[string]string, len(ret)*3)
+	seen := make(map[string]string, len(ret)*4)
 	for _, l := range ret {
 		for _, socket := range []struct{ envVar, addr string }{
 			{"OSCAR_LISTENERS", l.BOSListenAddress},
 			{"OSCAR_LISTENERS_SSL", l.BOSListenAddressSSL},
+			{"OSCAR_WEBSOCKET_LISTENERS", l.BOSWebSocketListenAddress},
 			{"KERBEROS_LISTENERS", l.KerberosListenAddress},
 		} {
 			if socket.addr == "" {

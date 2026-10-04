@@ -894,7 +894,12 @@ func (rt Handler) OServiceServiceRequest(ctx context.Context, service uint16, in
 	if err := wire.UnmarshalBE(&inBody, r); err != nil {
 		return err
 	}
-	outSNAC, err := rt.ServiceRequest(ctx, service, instance, inFrame, inBody, endpointCfg.Group)
+	listenerGroup := endpointCfg.Group
+	if endpointCfg.IsWebSocket {
+		listenerGroup.BOSAdvertisedHostPlain = endpointCfg.AdvertisedHost()
+		listenerGroup.BOSAdvertisedHostSSL = ""
+	}
+	outSNAC, err := rt.ServiceRequest(ctx, service, instance, inFrame, inBody, listenerGroup)
 	if err != nil {
 		return err
 	}

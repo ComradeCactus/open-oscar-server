@@ -8,12 +8,14 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/patrickmn/go-cache"
+	"golang.org/x/net/websocket"
 	"golang.org/x/time/rate"
 
 	"github.com/mk6i/open-oscar-server/config"
@@ -104,10 +106,47 @@ func (s *Server) ListenAndServe() error {
 			s.listenWg.Add(1)
 			go s.acceptLoop(ln, endpoint)
 		}
+		if endpoint, ok := group.WebSocketEndpoint(); ok {
+			ln, err := net.Listen("tcp", endpoint.ListenAddress)
+			if err != nil {
+				s.cleanupListeners()
+				s.shutdownCancel()
+				return fmt.Errorf("failed to listen on WebSocket address %s: %w", endpoint.ListenAddress, err)
+			}
+
+			s.logger.Info("starting WebSocket bridge",
+				"listener", group.Name,
+				"listen_address", endpoint.ListenAddress,
+				"advertised_host", endpoint.AdvertisedHost())
+
+			mux := http.NewServeMux()
+			mux.Handle("/oscar", websocket.Server{
+				Handler: websocket.Handler(func(conn *websocket.Conn) {
+					conn.PayloadType = websocket.BinaryFrame
+					wsConn := websocketNetConn{
+						Conn:       conn,
+						remoteAddr: websocketRemoteAddr(conn.Request().RemoteAddr),
+					}
+					s.trackConnection(wsConn)
+					s.handleConnection(s.shutdownCtx, wsConn, endpoint)
+				}),
+			})
+
+			s.listeners = append(s.listeners, ln)
+			s.listenWg.Add(1)
+			go s.serveWebSocket(ln, mux)
+		}
 	}
 
 	<-s.closed // block until Shutdown is called
 	return nil
+}
+
+func (s *Server) serveWebSocket(ln net.Listener, handler http.Handler) {
+	defer s.listenWg.Done()
+	if err := http.Serve(ln, handler); err != nil && !errors.Is(err, net.ErrClosed) {
+		s.logger.Error("WebSocket listener error", "err", err.Error())
+	}
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
@@ -148,14 +187,16 @@ func (s *Server) acceptLoop(ln net.Listener, endpointCfg config.Endpoint) {
 			continue
 		}
 
-		// track connection
-		s.connMu.Lock()
-		s.conns[conn] = struct{}{}
-		s.connMu.Unlock()
-
-		s.connWg.Add(1)
+		s.trackConnection(conn)
 		go s.handleConnection(s.shutdownCtx, conn, endpointCfg)
 	}
+}
+
+func (s *Server) trackConnection(conn net.Conn) {
+	s.connMu.Lock()
+	s.conns[conn] = struct{}{}
+	s.connWg.Add(1)
+	s.connMu.Unlock()
 }
 
 func (s *Server) handleConnection(ctx context.Context, conn net.Conn, endpointCfg config.Endpoint) {
@@ -172,6 +213,25 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn, endpointCf
 	if err := s.handler(ctx, conn, endpointCfg); err != nil {
 		s.logger.InfoContext(ctx, "user session failed", "err", err.Error())
 	}
+}
+
+type websocketNetConn struct {
+	*websocket.Conn
+	remoteAddr net.Addr
+}
+
+func (c websocketNetConn) RemoteAddr() net.Addr {
+	return c.remoteAddr
+}
+
+type websocketRemoteAddr string
+
+func (a websocketRemoteAddr) Network() string {
+	return "tcp"
+}
+
+func (a websocketRemoteAddr) String() string {
+	return string(a)
 }
 
 func (s *Server) cleanupListeners() {

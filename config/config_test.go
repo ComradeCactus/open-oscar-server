@@ -515,6 +515,77 @@ func TestParseListenersCfg(t *testing.T) {
 	}
 }
 
+func TestParseListenersCfg_WebSocket(t *testing.T) {
+	cfg := Config{
+		BOSListeners:                []string{"LOCAL://0.0.0.0:5190"},
+		BOSAdvertisedHostsPlain:     []string{"LOCAL://127.0.0.1:5190"},
+		BOSWebSocketListeners:       []string{"LOCAL://127.0.0.1:8090"},
+		BOSWebSocketAdvertisedHosts: []string{"LOCAL://chat.example.com:443"},
+	}
+
+	got, err := cfg.ParseListenersCfg()
+	if err != nil {
+		t.Fatalf("ParseListenersCfg() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ParseListenersCfg() returned %d listener groups, want 1", len(got))
+	}
+
+	want := ListenerGroup{
+		Name:                       "local",
+		BOSListenAddress:           "0.0.0.0:5190",
+		BOSAdvertisedHostPlain:     "127.0.0.1:5190",
+		BOSWebSocketListenAddress:  "127.0.0.1:8090",
+		BOSWebSocketAdvertisedHost: "chat.example.com:443",
+	}
+	if !reflect.DeepEqual(got[0], want) {
+		t.Errorf("ParseListenersCfg() = %+v, want %+v", got[0], want)
+	}
+
+	endpoint, ok := got[0].WebSocketEndpoint()
+	if !ok {
+		t.Fatal("WebSocketEndpoint() returned false")
+	}
+	if endpoint.AdvertisedHost() != "chat.example.com:443" || !endpoint.IsWebSocket {
+		t.Errorf("WebSocketEndpoint() = %+v, want advertised WebSocket endpoint", endpoint)
+	}
+}
+
+func TestParseListenersCfg_WebSocketRequiresMatchingListenerAndAdvertiseAddress(t *testing.T) {
+	tests := []struct {
+		name        string
+		listeners   []string
+		advertised  []string
+		errContains string
+	}{
+		{
+			name:        "missing advertised address",
+			listeners:   []string{"LOCAL://127.0.0.1:8090"},
+			errContains: "missing WebSocket BOS advertise address",
+		},
+		{
+			name:        "missing listen address",
+			advertised:  []string{"LOCAL://chat.example.com:443"},
+			errContains: "missing WebSocket BOS listen address",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				BOSListeners:                []string{"LOCAL://0.0.0.0:5190"},
+				BOSAdvertisedHostsPlain:     []string{"LOCAL://127.0.0.1:5190"},
+				BOSWebSocketListeners:       tt.listeners,
+				BOSWebSocketAdvertisedHosts: tt.advertised,
+			}
+			_, err := cfg.ParseListenersCfg()
+			if err == nil || !strings.Contains(err.Error(), tt.errContains) {
+				t.Fatalf("ParseListenersCfg() error = %v, want containing %q", err, tt.errContains)
+			}
+		})
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	tests := []struct {
 		name        string
